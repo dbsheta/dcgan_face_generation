@@ -2,16 +2,20 @@ import os
 from matplotlib import pyplot as plt
 import time
 import math
+import argparse
 
 import mxnet as mx
 from mxnet import nd
 from mxnet import autograd
 import numpy as np
-from v2.models import Generator, Discriminator
-from v2.data_utils import Dataset
+from models import Generator, Discriminator
+from data_utils import Dataset
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--epochs", "-e", help="No. of epochs to run for training", type=int)
+parser.add_argument("--resume", "-c", help="Continue training?1:Yes, 0:False", type=int)
 
-# In[4]:
+args = parser.parse_args()
 
 
 def time_since(start):
@@ -22,12 +26,12 @@ def time_since(start):
     return '%dm %ds' % (m, s)
 
 
-data_path = r"C:\Users\dhoomil.sheta\Downloads\Pix2Code Data\web\all_data"
+data_path = r"/Users/dhoomilbsheta/Development/datasets/pix2code_datasets/web/all_data"
 
 epochs = 10  # Set low by default for tests, set higher when you actually run this code.
 batch_size = 64
 z_dims = 100
-img_dims = 256
+img_dims = 128
 
 use_gpu = False
 ctx = mx.gpu() if use_gpu else mx.cpu()
@@ -42,20 +46,32 @@ def visualize(img_arr):
     plt.axis('off')
 
 
-netG = Generator()
-netD = Discriminator()
-netG.initialize(mx.init.Normal(0.02), ctx=ctx)
-netD.initialize(mx.init.Normal(0.02), ctx=ctx)
+netG = Generator(name="dcgan_g_html")
+netD = Discriminator(name="dcgan_d_html")
 
 loss = mx.gluon.loss.SigmoidBinaryCrossEntropyLoss()
-trainerG = mx.gluon.Trainer(netG.collect_params(), 'adam', {'learning_rate': lr, 'beta1': beta1, 'beta2': beta2})
-trainerD = mx.gluon.Trainer(netD.collect_params(), 'adam', {'learning_rate': lr, 'beta1': beta1, 'beta2': beta2})
 
 real_label = nd.ones((batch_size,), ctx=ctx)
 fake_label = nd.zeros((batch_size,), ctx=ctx)
 
 img_list = [os.path.join(data_path, x) for x in os.listdir(data_path) if x.endswith('png')]
-train_data = Dataset(img_list, batch_size=batch_size)
+train_data = Dataset(img_list, img_dims, batch_size=batch_size)
+
+
+def init_params():
+    netG.initialize(mx.init.Normal(0.02), ctx=ctx)
+    netD.initialize(mx.init.Normal(0.02), ctx=ctx)
+
+
+def load_weights():
+    netG.load_params(ctx=ctx)
+    netD.load_params(ctx=ctx)
+
+
+def init_optimizers():
+    trainerG = mx.gluon.Trainer(netG.collect_params(), 'adam', {'learning_rate': lr, 'beta1': beta1, 'beta2': beta2})
+    trainerD = mx.gluon.Trainer(netD.collect_params(), 'adam', {'learning_rate': lr, 'beta1': beta1, 'beta2': beta2})
+    return trainerG, trainerD
 
 
 def facc(label, pred):
@@ -67,9 +83,18 @@ def facc(label, pred):
 metric = mx.metric.CustomMetric(facc)
 
 
-def train(epochs):
+def train(epochs, resume=False):
+    if resume:
+        load_weights()
+        print("Loading pretrained weights")
+    else:
+        init_params()
+        print("Initializing parameters")
+    trainerG, trainerD = init_optimizers()
+
     netD.hybridize()
     netG.hybridize()
+
     print(f"Training for {epochs} epochs...")
     start = time.time()
     for epoch in range(epochs):
@@ -90,7 +115,6 @@ def train(epochs):
 
                 # train with fake image
                 fake = netG(latent_z)
-                print(fake.shape)
                 output = netD(fake.detach())
                 errD_fake = loss(output, fake_label)
                 errD = errD_real + errD_fake
@@ -98,7 +122,6 @@ def train(epochs):
                 metric.update([fake_label, ], [output, ])
 
             trainerD.step(batch_size)
-
             ############################
             # (2) Update G network: maximize log(D(G(z)))
             ###########################
@@ -108,19 +131,22 @@ def train(epochs):
                 errG.backward()
 
             trainerG.step(batch_size)
-
             if iteration % 10 == 0:
                 _, acc = metric.get()
                 print(f'epoch {epoch}: iter {iteration} d_loss = {nd.mean(errD).asscalar()}, '
                       f'generator loss = {nd.mean(errG).asscalar()}, training acc = {acc}')
 
-        iteration = iteration + 1
+            iteration = iteration + 1
         name, acc = metric.get()
-        print(f'epoch {epoch}: iter {iteration} d_loss = {nd.mean(errD).asscalar()}, '
+        print(f'epoch {epoch} last iteration d_loss = {nd.mean(errD).asscalar()}, '
               f'generator loss = {nd.mean(errG).asscalar()}, training acc = {acc}')
         print(f"Time: {time_since(start)}")
         metric.reset()
+        netG.save_params()
+        netD.save_params()
     print(f"Time: {time_since(start)}")
+    netG.save_params()
+    netD.save_params()
 
 
-train(2)
+train(args.epochs, bool(args.resume))
